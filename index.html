@@ -1,855 +1,1097 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta
-      name="viewport"
-      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
-    />
-    <title>IAI: SAMURAI STRIKE | 居合·一闪</title>
-    <style>
-      /* ==========================================================================
-       ZEN MINIMALIST CSS - THE WAY OF THE SAMURAI
-       ========================================================================== */
-      :root {
-        --bg-color: #050505;
-        --ink-color: #1a1a1a;
-        --blood-red: #c0392b;
-        --text-color: #e0e0e0;
-        --font-serif: "Georgia", "Times New Roman", serif;
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>IAI SAMURAI STRIKE</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:100%;height:100%;overflow:hidden;background:#030308;font-family:'Courier New',monospace;color:#ccc;user-select:none;-webkit-user-select:none;touch-action:none}
+#gameCanvas{position:absolute;top:0;left:0;width:100%;height:100%;display:block}
+.touch-zone{position:absolute;top:0;height:100%;z-index:10;cursor:pointer}
+#zoneLeft{left:0;width:50%}
+#zoneRight{left:50%;width:50%}
+#hud{position:absolute;top:0;left:0;width:100%;z-index:20;pointer-events:none;display:flex;flex-direction:column;align-items:center}
+#scoreDisplay{font-size:2.5em;margin-top:12px;letter-spacing:0.15em;text-shadow:0 0 10px rgba(255,255,255,0.3)}
+#centerMessage{font-size:2em;margin-top:8px;min-height:1.4em;text-align:center;font-weight:bold;text-shadow:0 0 20px rgba(255,255,255,0.5)}
+.status-row{display:flex;justify-content:space-between;width:100%;padding:0 20px;margin-top:6px}
+.status-text{font-size:1em;min-height:1.3em;transition:color 0.2s,text-shadow 0.2s}
+#p1Status{text-align:left;color:#0af}
+#p2Status{text-align:right;color:#f60}
+.status-text.active{text-shadow:0 0 12px currentColor}
+.status-text.error{color:#f33 !important;text-shadow:0 0 8px #f33 !important}
+.status-text.win{text-shadow:0 0 18px currentColor,0 0 30px currentColor}
+.status-text.lose{color:#a33 !important;opacity:0.6;text-shadow:none !important}
+.status-text.clash{color:#ff0 !important;text-shadow:0 0 15px #ff0,0 0 30px #ff0 !important}
+#instructions{position:absolute;bottom:12px;left:0;width:100%;text-align:center;z-index:20;pointer-events:none;font-size:0.8em;opacity:0.5}
+.msg-draw{color:#ff0 !important;text-shadow:0 0 20px #ff0,0 0 40px #ff0 !important}
+.msg-p1{color:#0af !important;text-shadow:0 0 20px #0af,0 0 40px #08f !important}
+.msg-p2{color:#f60 !important;text-shadow:0 0 20px #f60,0 0 40px #fa0 !important}
+.msg-fail{color:#f33 !important;text-shadow:0 0 15px #f33 !important}
+</style>
+</head>
+<body>
+<canvas id="gameCanvas"></canvas>
+<div class="touch-zone" id="zoneLeft"></div>
+<div class="touch-zone" id="zoneRight"></div>
+<div id="hud">
+  <div id="scoreDisplay">0 ⚔ 0</div>
+  <div id="centerMessage"></div>
+  <div class="status-row">
+    <div id="p1Status" class="status-text"></div>
+    <div id="p2Status" class="status-text"></div>
+  </div>
+</div>
+<div id="instructions">P1: Hold SPACE or tap LEFT | P2: Hold ENTER or tap RIGHT</div>
+<script>
+"use strict";
+
+/* ========== MathUtil ========== */
+class MathUtil {
+  static lerp(a, b, t) { return a + (b - a) * t; }
+  static clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
+  static rand(a, b) { if (b === undefined) { b = a; a = 0; } return a + Math.random() * (b - a); }
+  static randInt(a, b) { return Math.floor(MathUtil.rand(a, b + 0.999)); }
+  static noise2D(x, y) {
+    // Standard hash-based 2D noise using well-known irrational-product constants
+    var h = function(px, py) {
+      var s = Math.sin(px * 127.1 + py * 311.7) * 43758.5453;
+      return s - Math.floor(s);
+    };
+    var ix = Math.floor(x), iy = Math.floor(y);
+    var fx = x - ix, fy = y - iy;
+    var sx = fx * fx * (3 - 2 * fx);
+    var sy = fy * fy * (3 - 2 * fy);
+    var n00 = h(ix, iy), n10 = h(ix + 1, iy);
+    var n01 = h(ix, iy + 1), n11 = h(ix + 1, iy + 1);
+    var nx0 = MathUtil.lerp(n00, n10, sx);
+    var nx1 = MathUtil.lerp(n01, n11, sx);
+    return MathUtil.lerp(nx0, nx1, sy);
+  }
+  static fbm(x, y, octaves) {
+    octaves = octaves || 4;
+    var val = 0, amp = 0.5, freq = 1;
+    for (var i = 0; i < octaves; i++) {
+      val += amp * MathUtil.noise2D(x * freq, y * freq);
+      amp *= 0.5;
+      freq *= 2;
+    }
+    return val;
+  }
+}
+
+/* ========== Particle ========== */
+class Particle {
+  constructor(x, y, cfg) {
+    this.x = x;
+    this.y = y;
+    this.type = cfg.type || "circle";
+    var angle = (cfg.angleBase || 0) + MathUtil.rand(-cfg.angleSpread, cfg.angleSpread);
+    var speed = MathUtil.rand(cfg.speedMin || 50, cfg.speedMax || 200);
+    this.vx = Math.cos(angle) * speed;
+    this.vy = Math.sin(angle) * speed;
+    this.life = MathUtil.rand(cfg.lifeMin || 0.3, cfg.lifeMax || 1.0);
+    this.maxLife = this.life;
+    this.size = MathUtil.rand(cfg.sizeMin || 2, cfg.sizeMax || 6);
+    this.color = cfg.colors[MathUtil.randInt(0, cfg.colors.length - 1)];
+    this.gravity = cfg.gravity || 0;
+    this.drag = cfg.drag || 0.98;
+    this.vertices = null;
+    this.rotation = MathUtil.rand(0, Math.PI * 2);
+    this.rotSpeed = MathUtil.rand(-5, 5);
+    if (this.type === "shard") {
+      var sides = MathUtil.randInt(3, 6);
+      this.vertices = [];
+      for (var i = 0; i < sides; i++) {
+        var a2 = (Math.PI * 2 / sides) * i + MathUtil.rand(-0.3, 0.3);
+        var r = this.size * MathUtil.rand(0.5, 1.0);
+        this.vertices.push({ x: Math.cos(a2) * r, y: Math.sin(a2) * r });
       }
-
-      * {
-        margin: 0;
-        padding: 0;
-        box-sizing: border-box;
-        user-select: none;
-        -webkit-tap-highlight-color: transparent;
-      }
-
-      body,
-      html {
-        width: 100%;
-        height: 100%;
-        background-color: var(--bg-color);
-        overflow: hidden;
-        font-family: var(--font-serif);
-        color: var(--text-color);
-        touch-action: none;
-      }
-
-      /* 底层 Canvas：雨滴与血迹 */
-      #bg-canvas {
-        position: absolute;
-        top: 0;
-        left: 0;
-        width: 100%;
-        height: 100%;
-        z-index: 1;
-        pointer-events: none;
-      }
-
-      /* 游戏主容器 */
-      #game-container {
-        position: relative;
-        width: 100vw;
-        height: 100vh;
-        display: flex;
-        z-index: 10;
-      }
-
-      /* 玩家区域 */
-      .player-zone {
-        flex: 1;
-        position: relative;
-        display: flex;
-        flex-direction: column;
-        justify-content: center;
-        align-items: center;
-        cursor: pointer;
-        pointer-events: auto;
-        transition: background 0.5s;
-      }
-      #zone-p1 {
-        border-right: 1px solid rgba(255, 255, 255, 0.03);
-      }
-
-      /* 败者错位滑落动画 (核心视觉卖点) */
-      .sliced-zone {
-        animation: sliceDrop 1.5s cubic-bezier(0.1, 0.9, 0.2, 1) forwards;
-        filter: grayscale(1) brightness(0.3);
-        pointer-events: none;
-      }
-      @keyframes sliceDrop {
-        0% {
-          clip-path: polygon(0 0, 100% 0, 100% 100%, 0 100%);
-          transform: translateY(0) rotate(0);
-        }
-        5% {
-          clip-path: polygon(0 30%, 100% 50%, 100% 100%, 0 100%);
-          transform: translateY(2px) translateX(2px) rotate(1deg);
-        }
-        100% {
-          clip-path: polygon(0 30%, 100% 50%, 100% 100%, 0 100%);
-          transform: translateY(60px) translateX(15px) rotate(3deg);
-        }
-      }
-
-      /* UI 文本 */
-      .status-text {
-        font-size: 3vh;
-        letter-spacing: 0.5vw;
-        text-transform: uppercase;
-        opacity: 0.3;
-        transition: all 0.3s;
-        pointer-events: none;
-        text-align: center;
-      }
-      .status-text.active {
-        opacity: 1;
-        text-shadow: 0 0 15px rgba(255, 255, 255, 0.5);
-        transform: scale(1.05);
-      }
-      .status-text.error {
-        color: var(--blood-red);
-        opacity: 1;
-        text-shadow: 0 0 20px var(--blood-red);
-      }
-      .instruction {
-        font-size: 1.5vh;
-        opacity: 0.2;
-        margin-top: 20px;
-        font-family: monospace;
-        letter-spacing: 2px;
-      }
-
-      /* 一闪的刀光斜线 */
-      #slash-line {
-        position: absolute;
-        top: 50%;
-        left: -20%;
-        width: 140%;
-        height: 2px;
-        background: #fff;
-        z-index: 100;
-        pointer-events: none;
-        transform: translateY(-50%) rotate(10deg) scaleX(0);
-        transform-origin: center;
-        box-shadow:
-          0 0 10px #fff,
-          0 0 30px #fff;
-        opacity: 0;
-      }
-      .anim-slash {
-        animation: slashAnim 0.6s cubic-bezier(0.075, 0.82, 0.165, 1) forwards;
-      }
-      @keyframes slashAnim {
-        0% {
-          transform: translateY(-50%) rotate(10deg) scaleX(0);
-          opacity: 1;
-        }
-        10% {
-          transform: translateY(-50%) rotate(10deg) scaleX(1);
-          opacity: 1;
-          height: 4px;
-        }
-        100% {
-          transform: translateY(-50%) rotate(10deg) scaleX(1);
-          opacity: 0;
-          height: 0px;
-        }
-      }
-
-      /* 屏幕闪白/反色 */
-      #flash-overlay {
-        position: absolute;
-        top: 0;
-        left: 0;
-        width: 100%;
-        height: 100%;
-        background: #fff;
-        z-index: 90;
-        opacity: 0;
-        pointer-events: none;
-      }
-      .anim-flash {
-        animation: flashWhite 0.8s ease-out forwards;
-      }
-      @keyframes flashWhite {
-        0% {
-          opacity: 1;
-        }
-        100% {
-          opacity: 0;
-        }
-      }
-
-      /* 中央信息与记分板 */
-      #center-hud {
-        position: absolute;
-        top: 10%;
-        left: 50%;
-        transform: translateX(-50%);
-        text-align: center;
-        z-index: 50;
-        pointer-events: none;
-        width: 100%;
-      }
-      .score-board {
-        font-size: 4vh;
-        letter-spacing: 2vw;
-        opacity: 0.5;
-        font-family: monospace;
-      }
-      #main-msg {
-        font-size: 6vh;
-        margin-top: 20px;
-        letter-spacing: 1vw;
-        text-shadow: 0 4px 20px #000;
-      }
-    </style>
-  </head>
-  <body>
-    <canvas id="bg-canvas"></canvas>
-    <div id="flash-overlay"></div>
-    <div id="slash-line"></div>
-
-    <div id="game-container">
-      <div class="player-zone" id="zone-p1">
-        <div class="status-text" id="status-p1">PRESS & HOLD</div>
-        <div class="instruction">P1 / SPACE</div>
-      </div>
-
-      <div class="player-zone" id="zone-p2">
-        <div class="status-text" id="status-p2">PRESS & HOLD</div>
-        <div class="instruction">P2 / ENTER</div>
-      </div>
-    </div>
-
-    <div id="center-hud">
-      <div class="score-board">
-        <span id="score-p1">0</span> - <span id="score-p2">0</span>
-      </div>
-      <div id="main-msg"></div>
-    </div>
-
-    <script>
-      /**
-       * ==========================================================================
-       * IAI ENGINE - Cinematic Samurai Duel Logic & Procedural Rendering
-       * Zero Dependencies.
-       * ==========================================================================
-       */
-
-      // --- CONFIGURATION ---
-      const CFG = {
-        chargeTime: 3000, // 蓄力总时长(ms)
-        sweetSpotStart: 0.85, // 完美一闪起始区间 85%
-        sweetSpotEnd: 0.95, // 完美一闪结束区间 95%
-        winScore: 3,
-        colors: {
-          bg: "#050505",
-          rain: "rgba(255,255,255,0.05)",
-          blood: "#8a0303",
-          ring: "#fff",
-          ringDanger: "#c0392b",
-        },
-      };
-
-      const STATE = {
-        IDLE: 0,
-        READYING: 1,
-        CHARGING: 2,
-        RESOLVING: 3,
-        GAMEOVER: 4,
-      };
-      let gameState = STATE.IDLE;
-
-      // 游戏核心变量
-      let p1Ready = false,
-        p2Ready = false;
-      let p1Score = 0,
-        p2Score = 0; // 0=未出手或失误, >0 为出手完美度
-      let p1Committed = false,
-        p2Committed = false;
-      let chargeProgress = 0; // 0.0 to 1.0
-      let chargeStartTime = 0;
-      let wins = { p1: 0, p2: 0 };
-      let shakeAmt = 0;
-
-      // --- DOM 节点 ---
-      const elStatusP1 = document.getElementById("status-p1");
-      const elStatusP2 = document.getElementById("status-p2");
-      const elZoneP1 = document.getElementById("zone-p1");
-      const elZoneP2 = document.getElementById("zone-p2");
-      const elMsg = document.getElementById("main-msg");
-
-      // ================= 音效合成器 (Web Audio API) =================
-      const AudioCtx = window.AudioContext || window.webkitAudioContext;
-      let actx;
-      let rainNode, rainGain, heartbeatNode, heartbeatGain;
-
-      function initAudio() {
-        if (actx && actx.state === "running") return;
-        actx = new AudioCtx();
-
-        // 1. 生成环境雨声 (白噪声低通滤波)
-        const bufSize = actx.sampleRate * 2;
-        const buffer = actx.createBuffer(1, bufSize, actx.sampleRate);
-        const data = buffer.getChannelData(0);
-        for (let i = 0; i < bufSize; i++) data[i] = Math.random() * 2 - 1;
-        rainNode = actx.createBufferSource();
-        rainNode.buffer = buffer;
-        rainNode.loop = true;
-
-        const filter = actx.createBiquadFilter();
-        filter.type = "lowpass";
-        filter.frequency.value = 400; // 沉闷的雨声
-
-        rainGain = actx.createGain();
-        rainGain.gain.value = 0.5;
-
-        rainNode.connect(filter);
-        filter.connect(rainGain);
-        rainGain.connect(actx.destination);
-        rainNode.start();
-
-        // 2. 心跳发生器 (初始静音)
-        heartbeatNode = actx.createOscillator();
-        heartbeatNode.type = "sine";
-        heartbeatNode.frequency.value = 45;
-        heartbeatGain = actx.createGain();
-        heartbeatGain.gain.value = 0;
-        heartbeatNode.connect(heartbeatGain);
-        heartbeatGain.connect(actx.destination);
-        heartbeatNode.start();
-      }
-
-      const SFX = {
-        // 触控确认音
-        tap: () => {
-          if (!actx) return;
-          const osc = actx.createOscillator();
-          const gain = actx.createGain();
-          osc.type = "sine";
-          osc.frequency.setValueAtTime(800, actx.currentTime);
-          osc.frequency.exponentialRampToValueAtTime(
-            100,
-            actx.currentTime + 0.1,
-          );
-          gain.gain.setValueAtTime(0.1, actx.currentTime);
-          gain.gain.exponentialRampToValueAtTime(0.001, actx.currentTime + 0.1);
-          osc.connect(gain);
-          gain.connect(actx.destination);
-          osc.start();
-          osc.stop(actx.currentTime + 0.1);
-        },
-        // 出鞘/一闪 (极度凌厉)
-        slash: () => {
-          if (!actx) return;
-          // 高频尖啸
-          const osc = actx.createOscillator();
-          const gain = actx.createGain();
-          osc.type = "sawtooth";
-          osc.frequency.setValueAtTime(2000, actx.currentTime);
-          osc.frequency.exponentialRampToValueAtTime(
-            100,
-            actx.currentTime + 0.3,
-          );
-          gain.gain.setValueAtTime(0.5, actx.currentTime);
-          gain.gain.exponentialRampToValueAtTime(0.001, actx.currentTime + 0.3);
-          osc.connect(gain);
-          gain.connect(actx.destination);
-          osc.start();
-          osc.stop(actx.currentTime + 0.3);
-
-          // 刀刃碰撞声 (噪音爆音)
-          const bufSize = actx.sampleRate * 0.1;
-          const buffer = actx.createBuffer(1, bufSize, actx.sampleRate);
-          const data = buffer.getChannelData(0);
-          for (let i = 0; i < bufSize; i++) data[i] = Math.random() * 2 - 1;
-          const noise = actx.createBufferSource();
-          noise.buffer = buffer;
-          const nFilter = actx.createBiquadFilter();
-          nFilter.type = "highpass";
-          nFilter.frequency.value = 1000;
-          const nGain = actx.createGain();
-          nGain.gain.setValueAtTime(0.8, actx.currentTime);
-          nGain.gain.exponentialRampToValueAtTime(
-            0.001,
-            actx.currentTime + 0.1,
-          );
-          noise.connect(nFilter);
-          nFilter.connect(nGain);
-          nGain.connect(actx.destination);
-          noise.start();
-        },
-        // 抢跑/走火音效 (沉闷的钝击)
-        dullHit: () => {
-          if (!actx) return;
-          const osc = actx.createOscillator();
-          const gain = actx.createGain();
-          osc.type = "triangle";
-          osc.frequency.setValueAtTime(150, actx.currentTime);
-          osc.frequency.exponentialRampToValueAtTime(
-            40,
-            actx.currentTime + 0.2,
-          );
-          gain.gain.setValueAtTime(0.4, actx.currentTime);
-          gain.gain.linearRampToValueAtTime(0, actx.currentTime + 0.2);
-          osc.connect(gain);
-          gain.connect(actx.destination);
-          osc.start();
-          osc.stop(actx.currentTime + 0.2);
-        },
-      };
-
-      let lastHeartbeatTime = 0;
-      function triggerHeartbeatPulse(intensity) {
-        // intensity 0 to 1
-        if (!actx || intensity === 0) return;
-        const now = actx.currentTime;
-        const interval = 1.0 - intensity * 0.8; // 心跳越来越快 (1s -> 0.2s)
-
-        if (now - lastHeartbeatTime > interval) {
-          lastHeartbeatTime = now;
-          heartbeatGain.gain.cancelScheduledValues(now);
-          heartbeatGain.gain.setValueAtTime(0, now);
-          heartbeatGain.gain.linearRampToValueAtTime(
-            0.5 * intensity,
-            now + 0.05,
-          );
-          heartbeatGain.gain.linearRampToValueAtTime(0, now + 0.2);
-
-          // 手机震动心跳
-          if (navigator.vibrate) navigator.vibrate(20);
-        }
-      }
-
-      // ================= CANVAS 视觉渲染引擎 =================
-      const canvas = document.getElementById("bg-canvas");
-      const ctx = canvas.getContext("2d", { alpha: false });
-      let width, height;
-
-      class Drop {
-        constructor() {
-          this.reset(true);
-        }
-        reset(randomY = false) {
-          this.x = Math.random() * width;
-          this.y = randomY ? Math.random() * height : -10;
-          this.length = Math.random() * 20 + 10;
-          this.speed = Math.random() * 15 + 10;
-          this.opacity = Math.random() * 0.3 + 0.1;
-        }
-        update() {
-          this.y += this.speed;
-          this.x -= 1; // 风向左倾斜
-          if (this.y > height) this.reset();
-        }
-        draw(ctx) {
-          ctx.strokeStyle = `rgba(255, 255, 255, ${this.opacity})`;
-          ctx.lineWidth = 1;
-          ctx.beginPath();
-          ctx.moveTo(this.x, this.y);
-          ctx.lineTo(this.x - 1, this.y + this.length);
-          ctx.stroke();
-        }
-      }
-
-      class BloodInk {
-        constructor(x, y) {
-          this.x = x;
-          this.y = y;
-          const angle = Math.random() * Math.PI * 2;
-          const force = Math.random() * 25 + 5;
-          this.vx = Math.cos(angle) * force;
-          this.vy = Math.sin(angle) * force;
-          this.size = Math.random() * 15 + 2;
-          this.life = 1.0;
-          this.decay = Math.random() * 0.02 + 0.005;
-        }
-        update() {
-          this.x += this.vx;
-          this.y += this.vy;
-          this.vx *= 0.85;
-          this.vy *= 0.85; // 空气阻力极大，模拟水墨炸开
-          this.vy += 0.5; // 重力滴落
-          this.life -= this.decay;
-          this.size *= 0.98;
-        }
-        draw(ctx) {
-          if (this.life <= 0) return;
-          ctx.fillStyle = CFG.colors.blood;
-          ctx.globalAlpha = this.life;
-          ctx.beginPath();
-          ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.globalAlpha = 1.0;
-        }
-      }
-
-      let drops = [];
-      let inks = [];
-
-      function resize() {
-        width = canvas.width = window.innerWidth;
-        height = canvas.height = window.innerHeight;
-        drops = [];
-        for (let i = 0; i < 80; i++) drops.push(new Drop());
-      }
-      window.addEventListener("resize", resize);
-      resize();
-
-      function drawFocusRing() {
-        if (gameState !== STATE.CHARGING) return;
-        const cx = width / 2;
-        const cy = height / 2;
-        const maxRadius = Math.min(width, height) * 0.3;
-        const radius = maxRadius * Math.pow(chargeProgress, 0.5); // 抛物线放大
-
-        let ringColor = CFG.colors.ring;
-        let lineWidth = 2;
-
-        // 进入斩杀区间视觉突变
-        if (
-          chargeProgress >= CFG.sweetSpotStart &&
-          chargeProgress <= CFG.sweetSpotEnd
-        ) {
-          ringColor = CFG.colors.ringDanger;
-          lineWidth = 6;
-          ctx.shadowBlur = 20;
-          ctx.shadowColor = CFG.colors.ringDanger;
-          shakeAmt = 5; // 屏幕颤抖
-        } else if (chargeProgress > CFG.sweetSpotEnd) {
-          ringColor = "#555"; // 过热碎裂预警
-          lineWidth = 1;
-          ctx.shadowBlur = 0;
-        } else {
-          ctx.shadowBlur = 10;
-          ctx.shadowColor = "#fff";
-        }
-
-        ctx.strokeStyle = ringColor;
-        ctx.lineWidth = lineWidth;
+    }
+  }
+  update(dt) {
+    this.vy += this.gravity * dt;
+    this.vx *= this.drag;
+    this.vy *= this.drag;
+    this.x += this.vx * dt;
+    this.y += this.vy * dt;
+    this.life -= dt;
+    this.rotation += this.rotSpeed * dt;
+  }
+  get alpha() { return MathUtil.clamp(this.life / this.maxLife, 0, 1); }
+  get alive() { return this.life > 0; }
+  draw(ctx) {
+    var a = this.alpha;
+    if (a <= 0) return;
+    ctx.save();
+    ctx.globalAlpha = a;
+    if (this.type === "circle") {
+      ctx.fillStyle = this.color;
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, this.size * a, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (this.type === "spark") {
+      ctx.strokeStyle = this.color;
+      var spd = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
+      var len = spd * 0.04;
+      if (spd < 1) spd = 1;
+      ctx.lineWidth = Math.max(1, this.size * 0.5 * a);
+      ctx.beginPath();
+      ctx.moveTo(this.x, this.y);
+      ctx.lineTo(this.x - (this.vx / spd) * len, this.y - (this.vy / spd) * len);
+      ctx.stroke();
+    } else if (this.type === "shard") {
+      var progress = 1 - a;
+      var scale = MathUtil.lerp(1.0, 0.3, progress);
+      ctx.translate(this.x, this.y);
+      ctx.rotate(this.rotation);
+      ctx.scale(scale, scale);
+      ctx.fillStyle = this.color;
+      ctx.strokeStyle = "rgba(255,255,255," + (a * 0.8) + ")";
+      ctx.lineWidth = 1.5 / scale;
+      if (this.vertices && this.vertices.length > 0) {
         ctx.beginPath();
-        ctx.arc(
-          cx,
-          cy,
-          radius,
-          -Math.PI / 2,
-          -Math.PI / 2 + Math.PI * 2 * chargeProgress,
-        );
+        ctx.moveTo(this.vertices[0].x, this.vertices[0].y);
+        for (var i = 1; i < this.vertices.length; i++) {
+          ctx.lineTo(this.vertices[i].x, this.vertices[i].y);
+        }
+        ctx.closePath();
+        ctx.globalAlpha = a * 0.5;
+        ctx.fill();
+        ctx.globalAlpha = a * 0.8;
         ctx.stroke();
-        ctx.shadowBlur = 0;
       }
+    }
+    ctx.restore();
+  }
+}
 
-      function renderCanvas() {
-        // 处理震动
-        if (shakeAmt > 0) shakeAmt *= 0.8;
-        const dx = (Math.random() - 0.5) * shakeAmt;
-        const dy = (Math.random() - 0.5) * shakeAmt;
+/* ========== ParticleSystem ========== */
+class ParticleSystem {
+  constructor() { this.particles = []; }
+  emit(x, y, count, cfg) {
+    for (var i = 0; i < count; i++) {
+      this.particles.push(new Particle(x, y, cfg));
+    }
+  }
+  update(dt) {
+    for (var i = this.particles.length - 1; i >= 0; i--) {
+      this.particles[i].update(dt);
+      if (!this.particles[i].alive) this.particles.splice(i, 1);
+    }
+  }
+  draw(ctx) {
+    for (var i = 0; i < this.particles.length; i++) {
+      this.particles[i].draw(ctx);
+    }
+  }
+  clear() { this.particles = []; }
+}
 
-        ctx.setTransform(1, 0, 0, 1, dx, dy);
+/* ========== AudioSynth ========== */
+class AudioSynth {
+  constructor() {
+    this.ctx = null;
+    this.master = null;
+    this.droneGain = null;
+    this.droneOsc = null;
+    this.droneLp = null;
+    this.subGain = null;
+    this.subOsc = null;
+    this.initialized = false;
+  }
+  init() {
+    if (this.initialized) return;
+    try {
+      this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+      this.master = this.ctx.createGain();
+      this.master.gain.value = 0.5;
+      this.master.connect(this.ctx.destination);
+      this.droneOsc = this.ctx.createOscillator();
+      this.droneOsc.type = "sawtooth";
+      this.droneOsc.frequency.value = 40;
+      this.droneGain = this.ctx.createGain();
+      this.droneGain.gain.value = 0;
+      this.droneLp = this.ctx.createBiquadFilter();
+      this.droneLp.type = "lowpass";
+      this.droneLp.frequency.value = 80;
+      this.droneOsc.connect(this.droneLp);
+      this.droneLp.connect(this.droneGain);
+      this.droneGain.connect(this.master);
+      this.droneOsc.start();
+      this.subOsc = this.ctx.createOscillator();
+      this.subOsc.type = "sine";
+      this.subOsc.frequency.value = 30;
+      this.subGain = this.ctx.createGain();
+      this.subGain.gain.value = 0;
+      this.subOsc.connect(this.subGain);
+      this.subGain.connect(this.master);
+      this.subOsc.start();
+      this.initialized = true;
+    } catch (e) { this.ctx = null; }
+  }
+  updateChargeDrone(intensity) {
+    if (!this.ctx) return;
+    var t = this.ctx.currentTime;
+    var ci = MathUtil.clamp(intensity, 0, 1);
+    this.droneGain.gain.linearRampToValueAtTime(ci * 0.12, t + 0.05);
+    this.droneOsc.frequency.linearRampToValueAtTime(40 + ci * 60, t + 0.05);
+    this.droneLp.frequency.linearRampToValueAtTime(80 + ci * 200, t + 0.05);
+    this.subGain.gain.linearRampToValueAtTime(ci * 0.15, t + 0.05);
+    this.subOsc.frequency.linearRampToValueAtTime(30 + ci * 20, t + 0.05);
+  }
+  silenceDrone() {
+    if (!this.ctx) return;
+    var t = this.ctx.currentTime;
+    this.droneGain.gain.linearRampToValueAtTime(0, t + 0.3);
+    this.subGain.gain.linearRampToValueAtTime(0, t + 0.3);
+  }
+  playTap() {
+    if (!this.ctx) return;
+    var t = this.ctx.currentTime;
+    var osc = this.ctx.createOscillator();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(600, t);
+    osc.frequency.linearRampToValueAtTime(200, t + 0.08);
+    var g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.25, t);
+    g.gain.linearRampToValueAtTime(0, t + 0.08);
+    osc.connect(g);
+    g.connect(this.master);
+    osc.start(t);
+    osc.stop(t + 0.1);
+  }
+  _makeNoise(dur) {
+    var bufLen = Math.floor(this.ctx.sampleRate * dur);
+    var buf = this.ctx.createBuffer(1, bufLen, this.ctx.sampleRate);
+    var data = buf.getChannelData(0);
+    for (var i = 0; i < bufLen; i++) data[i] = Math.random() * 2 - 1;
+    return buf;
+  }
+  playThunderClap() {
+    if (!this.ctx) return;
+    var t = this.ctx.currentTime;
+    var subOsc = this.ctx.createOscillator();
+    subOsc.type = "sine";
+    subOsc.frequency.setValueAtTime(80, t);
+    subOsc.frequency.exponentialRampToValueAtTime(20, t + 0.5);
+    var subG = this.ctx.createGain();
+    subG.gain.setValueAtTime(0.4, t);
+    subG.gain.linearRampToValueAtTime(0, t + 0.5);
+    subOsc.connect(subG);
+    subG.connect(this.master);
+    subOsc.start(t);
+    subOsc.stop(t + 0.6);
+    var nBuf = this._makeNoise(0.5);
+    var ns1 = this.ctx.createBufferSource();
+    ns1.buffer = nBuf;
+    var bp = this.ctx.createBiquadFilter();
+    bp.type = "bandpass";
+    bp.frequency.value = 3000;
+    bp.Q.value = 5;
+    var ng1 = this.ctx.createGain();
+    ng1.gain.setValueAtTime(0.3, t);
+    ng1.gain.linearRampToValueAtTime(0, t + 0.35);
+    ns1.connect(bp);
+    bp.connect(ng1);
+    ng1.connect(this.master);
+    ns1.start(t);
+    ns1.stop(t + 0.4);
+    var ns2 = this.ctx.createBufferSource();
+    ns2.buffer = nBuf;
+    var lp = this.ctx.createBiquadFilter();
+    lp.type = "lowpass";
+    lp.frequency.value = 500;
+    var ng2 = this.ctx.createGain();
+    ng2.gain.setValueAtTime(0.35, t);
+    ng2.gain.linearRampToValueAtTime(0, t + 0.5);
+    ns2.connect(lp);
+    lp.connect(ng2);
+    ng2.connect(this.master);
+    ns2.start(t);
+    ns2.stop(t + 0.55);
+    var sawOsc = this.ctx.createOscillator();
+    sawOsc.type = "sawtooth";
+    sawOsc.frequency.setValueAtTime(4000, t);
+    sawOsc.frequency.exponentialRampToValueAtTime(100, t + 0.4);
+    var sg = this.ctx.createGain();
+    sg.gain.setValueAtTime(0.15, t);
+    sg.gain.linearRampToValueAtTime(0, t + 0.4);
+    sawOsc.connect(sg);
+    sg.connect(this.master);
+    sawOsc.start(t);
+    sawOsc.stop(t + 0.5);
+  }
+  playFail() {
+    if (!this.ctx) return;
+    var t = this.ctx.currentTime;
+    var osc = this.ctx.createOscillator();
+    osc.type = "triangle";
+    osc.frequency.setValueAtTime(120, t);
+    osc.frequency.linearRampToValueAtTime(30, t + 0.3);
+    var g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.3, t);
+    g.gain.linearRampToValueAtTime(0, t + 0.3);
+    osc.connect(g);
+    g.connect(this.master);
+    osc.start(t);
+    osc.stop(t + 0.35);
+  }
+  playClash() {
+    if (!this.ctx) return;
+    var t = this.ctx.currentTime;
+    var o1 = this.ctx.createOscillator();
+    o1.type = "square";
+    o1.frequency.setValueAtTime(800, t);
+    o1.frequency.linearRampToValueAtTime(200, t + 0.3);
+    var g1 = this.ctx.createGain();
+    g1.gain.setValueAtTime(0.2, t);
+    g1.gain.linearRampToValueAtTime(0, t + 0.3);
+    o1.connect(g1);
+    g1.connect(this.master);
+    o1.start(t);
+    o1.stop(t + 0.35);
+    var o2 = this.ctx.createOscillator();
+    o2.type = "square";
+    o2.frequency.setValueAtTime(1200, t);
+    o2.frequency.linearRampToValueAtTime(300, t + 0.3);
+    var g2 = this.ctx.createGain();
+    g2.gain.setValueAtTime(0.2, t);
+    g2.gain.linearRampToValueAtTime(0, t + 0.3);
+    o2.connect(g2);
+    g2.connect(this.master);
+    o2.start(t);
+    o2.stop(t + 0.35);
+    var nBuf = this._makeNoise(0.2);
+    var ns = this.ctx.createBufferSource();
+    ns.buffer = nBuf;
+    var ng = this.ctx.createGain();
+    ng.gain.setValueAtTime(0.25, t);
+    ng.gain.linearRampToValueAtTime(0, t + 0.2);
+    ns.connect(ng);
+    ng.connect(this.master);
+    ns.start(t);
+    ns.stop(t + 0.25);
+  }
+}
 
-        // 刷除残影
-        ctx.fillStyle = CFG.colors.bg;
-        ctx.fillRect(-10, -10, width + 20, height + 20);
+/* ========== InputManager ========== */
+class InputManager {
+  constructor(engine) {
+    this.engine = engine;
+    this.zoneLeft = document.getElementById("zoneLeft");
+    this.zoneRight = document.getElementById("zoneRight");
+    this._bindEvents();
+  }
+  _bindEvents() {
+    var eng = this.engine;
+    window.addEventListener("keydown", function(e) {
+      if (e.repeat) return;
+      if (e.code === "Space") { e.preventDefault(); eng.onPlayerDown(1); }
+      if (e.code === "Enter" || e.code === "NumpadEnter") { e.preventDefault(); eng.onPlayerDown(2); }
+    });
+    window.addEventListener("keyup", function(e) {
+      if (e.code === "Space") { e.preventDefault(); eng.onPlayerUp(1); }
+      if (e.code === "Enter" || e.code === "NumpadEnter") { e.preventDefault(); eng.onPlayerUp(2); }
+    });
+    this.zoneLeft.addEventListener("touchstart", function(e) { e.preventDefault(); eng.onPlayerDown(1); }, { passive: false });
+    this.zoneLeft.addEventListener("touchend", function(e) { e.preventDefault(); eng.onPlayerUp(1); }, { passive: false });
+    this.zoneRight.addEventListener("touchstart", function(e) { e.preventDefault(); eng.onPlayerDown(2); }, { passive: false });
+    this.zoneRight.addEventListener("touchend", function(e) { e.preventDefault(); eng.onPlayerUp(2); }, { passive: false });
+    this.zoneLeft.addEventListener("mousedown", function(e) { e.preventDefault(); eng.onPlayerDown(1); });
+    this.zoneRight.addEventListener("mousedown", function(e) { e.preventDefault(); eng.onPlayerDown(2); });
+    window.addEventListener("mouseup", function() { eng.onPlayerUp(1); eng.onPlayerUp(2); });
+    window.addEventListener("contextmenu", function(e) { e.preventDefault(); });
+  }
+}
 
-        drops.forEach((d) => {
-          d.update();
-          d.draw(ctx);
-        });
-
-        for (let i = inks.length - 1; i >= 0; i--) {
-          inks[i].update();
-          inks[i].draw(ctx);
-          if (inks[i].life <= 0) inks.splice(i, 1);
-        }
-
-        drawFocusRing();
-        ctx.setTransform(1, 0, 0, 1, 0, 0);
-      }
-
-      // ================= 游戏核心状态机 =================
-
-      function setUI(p1Txt, p2Txt, p1Class = "", p2Class = "", centerMsg = "") {
-        elStatusP1.innerText = p1Txt;
-        elStatusP1.className = `status-text ${p1Class}`;
-        elStatusP2.innerText = p2Txt;
-        elStatusP2.className = `status-text ${p2Class}`;
-        elMsg.innerText = centerMsg;
-      }
-
-      function loop(timestamp) {
-        if (gameState === STATE.CHARGING) {
-          chargeProgress = (timestamp - chargeStartTime) / CFG.chargeTime;
-
-          // 音效心跳与压迫感
-          triggerHeartbeatPulse(Math.min(1, chargeProgress * 1.5));
-
-          // 自动判定走火 (Overheat)
-          if (chargeProgress > CFG.sweetSpotEnd) {
-            if (!p1Committed) commitAction(1, true);
-            if (!p2Committed) commitAction(2, true);
-          }
-        }
-
-        renderCanvas();
-        requestAnimationFrame(loop);
-      }
-      requestAnimationFrame(loop);
-
-      function startCharging() {
-        if (gameState !== STATE.READYING) return;
-        gameState = STATE.CHARGING;
-        chargeProgress = 0;
-        p1Score = 0;
-        p2Score = 0;
-        p1Committed = false;
-        p2Committed = false;
-        chargeStartTime = performance.now();
-        setUI("", "", "", "", "");
-
-        // 手机震动提示开始
-        if (navigator.vibrate) navigator.vibrate(50);
-      }
-
-      function handlePress(player) {
-        initAudio();
-        if (gameState === STATE.GAMEOVER || gameState === STATE.RESOLVING)
-          return;
-
-        if (gameState === STATE.IDLE) {
-          if (player === 1) {
-            p1Ready = true;
-            setUI(
-              "READY",
-              elStatusP2.innerText,
-              "active",
-              elStatusP2.classList.contains("active") ? "active" : "",
-            );
-          }
-          if (player === 2) {
-            p2Ready = true;
-            setUI(
-              elStatusP1.innerText,
-              "READY",
-              elStatusP1.classList.contains("active") ? "active" : "",
-              "active",
-            );
-          }
-          SFX.tap();
-
-          if (p1Ready && p2Ready) {
-            gameState = STATE.READYING;
-            setTimeout(startCharging, 500); // 双双准备后，停顿0.5秒发球
-          }
-        }
-      }
-
-      function handleRelease(player) {
-        if (gameState === STATE.IDLE || gameState === STATE.READYING) {
-          // 取消准备
-          if (player === 1) {
-            p1Ready = false;
-            setUI(
-              "PRESS & HOLD",
-              elStatusP2.innerText,
-              "",
-              elStatusP2.classList.contains("active") ? "active" : "",
-            );
-          }
-          if (player === 2) {
-            p2Ready = false;
-            setUI(
-              elStatusP1.innerText,
-              "PRESS & HOLD",
-              elStatusP1.classList.contains("active") ? "active" : "",
-              "",
-            );
-          }
-          return;
-        }
-
-        if (gameState === STATE.CHARGING) {
-          commitAction(player, false);
-        }
-      }
-
-      function commitAction(player, isAutoOverheat) {
-        if (gameState !== STATE.CHARGING) return;
-        if ((player === 1 && p1Committed) || (player === 2 && p2Committed))
-          return;
-
-        const actionProgress = Math.min(
-          1,
-          (performance.now() - chargeStartTime) / CFG.chargeTime,
-        );
-        let score = 0;
-        let statusText = "";
-        let isError = false;
-
-        if (isAutoOverheat || actionProgress > CFG.sweetSpotEnd) {
-          statusText = "BROKEN";
-          isError = true;
-          SFX.dullHit();
-        } else if (actionProgress < CFG.sweetSpotStart) {
-          statusText = "TOO EARLY";
-          isError = true;
-          SFX.dullHit();
-        } else if (actionProgress <= CFG.sweetSpotEnd) {
-          score = actionProgress; // 完美一闪！记录精度
-          statusText = "STRIKE!";
-          SFX.tap(); // 极其轻微的锁定音，给对方心理压力
-        }
-
-        if (player === 1) {
-          p1Score = score;
-          p1Committed = true;
-          elStatusP1.innerText = statusText;
-          elStatusP1.className = `status-text ${isError ? "error" : "active"}`;
-        } else {
-          p2Score = score;
-          p2Committed = true;
-          elStatusP2.innerText = statusText;
-          elStatusP2.className = `status-text ${isError ? "error" : "active"}`;
-        }
-
-        // 如果双方都已判定，或一方完美另一方失误（直接结算）
-        if (p1Committed && p2Committed) {
-          resolveDuel();
-        } else if (isError) {
-          resolveDuel(player === 1 ? 2 : 1);
-        }
-      }
-
-      function resolveDuel(forcedWinner = 0) {
-        if (gameState === STATE.RESOLVING) return;
-        gameState = STATE.RESOLVING;
-        if (rainGain) rainGain.gain.setTargetAtTime(0.1, actx.currentTime, 0.5); // 雨声变小
-
-        let winner = forcedWinner; // 0=Draw, 1=P1, 2=P2
-
-        if (!winner) {
-          if (p1Score > p2Score) winner = 1;
-          else if (p2Score > p1Score) winner = 2;
-          else winner = 0; // 精度完全一致的奇迹Draw
-        }
-
-        // 演出序列：屏息 -> 一闪 -> 结算
-        setTimeout(() => {
-          executeCinematic(winner);
-        }, 400); // 0.4秒的“死寂”
-      }
-
-      function executeCinematic(winner) {
-        // 1. 闪白与音效
-        const flash = document.getElementById("flash-overlay");
-        const slash = document.getElementById("slash-line");
-
-        flash.classList.remove("anim-flash");
-        void flash.offsetWidth;
-        flash.classList.add("anim-flash");
-        slash.classList.remove("anim-slash");
-        void slash.offsetWidth;
-        slash.classList.add("anim-slash");
-
-        SFX.slash();
-        if (navigator.vibrate) navigator.vibrate([100, 50, 100]); // 强烈震动
-
-        // 2. 败者断裂与溅血
-        if (winner === 1) {
-          elZoneP2.classList.add("sliced-zone");
-          spawnInk(width * 0.75, height / 2);
-          wins.p1++;
-          setUI("WINNER", "SLAIN", "active", "error");
-        } else if (winner === 2) {
-          elZoneP1.classList.add("sliced-zone");
-          spawnInk(width * 0.25, height / 2);
-          wins.p2++;
-          setUI("SLAIN", "WINNER", "error", "active");
-        } else {
-          setUI("DRAW", "DRAW", "error", "error");
-        }
-
-        document.getElementById("score-p1").innerText = wins.p1;
-        document.getElementById("score-p2").innerText = wins.p2;
-
-        gameState = STATE.GAMEOVER;
-
-        // 3. 重置循环
-        setTimeout(() => {
-          if (wins.p1 >= CFG.winScore || wins.p2 >= CFG.winScore) {
-            elMsg.innerText =
-              wins.p1 >= CFG.winScore ? "P1 IS THE MASTER" : "P2 IS THE MASTER";
-            setTimeout(hardReset, 4000);
-          } else {
-            resetRound();
-          }
-        }, 2500);
-      }
-
-      function spawnInk(x, y) {
-        for (let i = 0; i < 60; i++) inks.push(new BloodInk(x, y));
-      }
-
-      function resetRound() {
-        gameState = STATE.IDLE;
-        p1Ready = p2Ready = false;
-        elZoneP1.classList.remove("sliced-zone");
-        elZoneP2.classList.remove("sliced-zone");
-        setUI("PRESS & HOLD", "PRESS & HOLD");
-        if (rainGain) rainGain.gain.setTargetAtTime(0.5, actx.currentTime, 1);
-      }
-
-      function hardReset() {
-        wins = { p1: 0, p2: 0 };
-        document.getElementById("score-p1").innerText = 0;
-        document.getElementById("score-p2").innerText = 0;
-        elMsg.innerText = "";
-        resetRound();
-      }
-
-      // ================= 输入绑定 =================
-      const bindHold = (el, player) => {
-        el.addEventListener(
-          "touchstart",
-          (e) => {
-            e.preventDefault();
-            handlePress(player);
-          },
-          { passive: false },
-        );
-        el.addEventListener("touchend", (e) => {
-          e.preventDefault();
-          handleRelease(player);
-        });
-        el.addEventListener("mousedown", (e) => {
-          handlePress(player);
-        });
-        window.addEventListener("mouseup", (e) => {
-          handleRelease(player);
-        }); // 全局释放防卡键
+/* ========== Renderer ========== */
+class Renderer {
+  constructor(canvas) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext("2d");
+    this.w = 0;
+    this.h = 0;
+    this.cx = 0;
+    this.cy = 0;
+    this.shakeAmount = 0;
+    this.shakeDecay = 0.9;
+    this.flashAlpha = 0;
+    this.freezeUntil = 0;
+    this.speedLines = [];
+    this.time = 0;
+    this.stars = [];
+    for (var i = 0; i < 120; i++) {
+      this.stars.push({
+        x: Math.random(),
+        y: Math.random(),
+        size: MathUtil.rand(0.5, 2),
+        speed: MathUtil.rand(0.002, 0.008),
+        brightness: MathUtil.rand(0.2, 0.7)
+      });
+    }
+    this.resize();
+    var self = this;
+    window.addEventListener("resize", function() { self.resize(); });
+  }
+  resize() {
+    var dpr = window.devicePixelRatio || 1;
+    this.w = window.innerWidth;
+    this.h = window.innerHeight;
+    this.canvas.width = this.w * dpr;
+    this.canvas.height = this.h * dpr;
+    this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    this.cx = this.w / 2;
+    this.cy = this.h / 2;
+  }
+  shake(amount) { this.shakeAmount = Math.max(this.shakeAmount, amount); }
+  flash(alpha) { this.flashAlpha = Math.max(this.flashAlpha, alpha || 1); }
+  spawnSpeedLines() {
+    this.speedLines = [];
+    for (var i = 0; i < 60; i++) {
+      var angle = MathUtil.rand(0, Math.PI * 2);
+      var sl = {
+        angle: angle,
+        startR: MathUtil.rand(10, 80),
+        length: MathUtil.rand(100, 400),
+        width: MathUtil.rand(1, 4),
+        speed: MathUtil.rand(600, 1500),
+        offset: 0,
+        alpha: MathUtil.rand(0.5, 1),
+        life: MathUtil.rand(0.3, 0.8),
+        maxLife: 0
       };
-      bindHold(elZoneP1, 1);
-      bindHold(elZoneP2, 2);
+      sl.maxLife = sl.life;
+      this.speedLines.push(sl);
+    }
+  }
+  update(dt) {
+    this.time += dt;
+    this.shakeAmount *= this.shakeDecay;
+    if (this.shakeAmount < 0.5) this.shakeAmount = 0;
+    this.flashAlpha *= 0.92;
+    if (this.flashAlpha < 0.01) this.flashAlpha = 0;
+    for (var i = this.speedLines.length - 1; i >= 0; i--) {
+      this.speedLines[i].offset += this.speedLines[i].speed * dt;
+      this.speedLines[i].life -= dt;
+      if (this.speedLines[i].life <= 0) this.speedLines.splice(i, 1);
+    }
+    for (var j = 0; j < this.stars.length; j++) {
+      this.stars[j].x += this.stars[j].speed * dt * 0.1;
+      if (this.stars[j].x > 1.05) this.stars[j].x -= 1.1;
+    }
+  }
+  beginFrame() {
+    var ctx = this.ctx;
+    ctx.save();
+    if (this.shakeAmount > 0) {
+      ctx.translate(MathUtil.rand(-this.shakeAmount, this.shakeAmount), MathUtil.rand(-this.shakeAmount, this.shakeAmount));
+    }
+    ctx.fillStyle = "#030308";
+    ctx.fillRect(-50, -50, this.w + 100, this.h + 100);
+  }
+  drawBackground(chargeIntensity) {
+    var ctx = this.ctx;
+    var w = this.w, h = this.h, cx = this.cx, cy = this.cy, t = this.time;
+    for (var i = 0; i < this.stars.length; i++) {
+      var s = this.stars[i];
+      var flicker = 0.7 + 0.3 * Math.sin(t * 3 + s.x * 100);
+      ctx.fillStyle = "rgba(200,210,255," + (s.brightness * flicker) + ")";
+      ctx.fillRect(s.x * w, s.y * h, s.size, s.size);
+    }
+    ctx.strokeStyle = "rgba(50,50,80,0.15)";
+    ctx.lineWidth = 0.5;
+    var gridSize = 60;
+    var offsetX = (t * 5) % gridSize;
+    for (var gx = -gridSize + offsetX; gx < w + gridSize; gx += gridSize) {
+      ctx.beginPath(); ctx.moveTo(gx, 0); ctx.lineTo(gx, h); ctx.stroke();
+    }
+    var offsetY = (t * 3) % gridSize;
+    for (var gy = -gridSize + offsetY; gy < h + gridSize; gy += gridSize) {
+      ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(w, gy); ctx.stroke();
+    }
+    var vi = MathUtil.clamp(chargeIntensity, 0, 1);
+    if (vi > 0.01) {
+      ctx.save();
+      ctx.globalCompositeOperation = "lighter";
+      var rings = 5 + Math.floor(vi * 8);
+      for (var ri = 0; ri < rings; ri++) {
+        var r = 30 + ri * (20 + vi * 30);
+        var a = vi * (0.03 + (ri % 2 === 0 ? 0.02 : 0)) * (1 - ri / (rings + 1));
+        var hue = (t * 40 + ri * 30) % 360;
+        ctx.strokeStyle = "hsla(" + hue + ",70%,60%," + a + ")";
+        ctx.lineWidth = 1 + vi * 2;
+        ctx.beginPath();
+        var startAngle = t * (1 + ri * 0.3) + ri;
+        var sweep = Math.PI * (0.5 + vi * 1.2);
+        ctx.arc(cx, cy, r, startAngle, startAngle + sweep);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+  }
+  drawChargeAuras(p1c, p2c) {
+    var ctx = this.ctx, cx = this.cx, cy = this.cy, t = this.time;
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    if (p1c > 0) {
+      var baseX = cx - 120;
+      var grad = ctx.createRadialGradient(baseX, cy, 0, baseX, cy, 100 + p1c * 200);
+      grad.addColorStop(0, "rgba(0,170,255," + (p1c * 0.3) + ")");
+      grad.addColorStop(0.5, "rgba(0,136,255," + (p1c * 0.15) + ")");
+      grad.addColorStop(1, "rgba(0,170,255,0)");
+      ctx.fillStyle = grad;
+      ctx.fillRect(baseX - 300, cy - 300, 600, 600);
+      var arcCount = 3 + Math.floor(p1c * 6);
+      for (var ai = 0; ai < arcCount; ai++) {
+        ctx.strokeStyle = "rgba(0," + MathUtil.randInt(170, 255) + ",255," + (0.3 + p1c * 0.5) + ")";
+        ctx.lineWidth = MathUtil.rand(1, 2 + p1c * 2);
+        ctx.beginPath();
+        var lx = baseX, ly = cy;
+        ctx.moveTo(lx, ly);
+        var segs = MathUtil.randInt(4, 10);
+        var dir = MathUtil.rand(0, Math.PI * 2);
+        for (var si = 0; si < segs; si++) {
+          var segLen = MathUtil.rand(10, 40) * p1c;
+          var jitter = MathUtil.rand(-1.2, 1.2);
+          lx += Math.cos(dir + jitter) * segLen;
+          ly += Math.sin(dir + jitter) * segLen;
+          ctx.lineTo(lx, ly);
+        }
+        ctx.stroke();
+      }
+      for (var pi = 0; pi < Math.floor(p1c * 8); pi++) {
+        var px = baseX + MathUtil.rand(-80, 80) * p1c;
+        var py = cy + MathUtil.rand(-80, 80) * p1c;
+        ctx.fillStyle = "rgba(0,221,255," + MathUtil.rand(0.3, 0.7) + ")";
+        ctx.beginPath();
+        ctx.arc(px, py, MathUtil.rand(1, 4), 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    if (p2c > 0) {
+      var baseX2 = cx + 120;
+      var grad2 = ctx.createRadialGradient(baseX2, cy, 0, baseX2, cy, 100 + p2c * 200);
+      grad2.addColorStop(0, "rgba(255,102,0," + (p2c * 0.3) + ")");
+      grad2.addColorStop(0.5, "rgba(255,128,0," + (p2c * 0.15) + ")");
+      grad2.addColorStop(1, "rgba(255,102,0,0)");
+      ctx.fillStyle = grad2;
+      ctx.fillRect(baseX2 - 300, cy - 300, 600, 600);
+      var tCount = 3 + Math.floor(p2c * 6);
+      var flameColors = ["#f60", "#f80", "#fa0"];
+      for (var ti = 0; ti < tCount; ti++) {
+        ctx.strokeStyle = flameColors[ti % 3];
+        ctx.globalAlpha = 0.3 + p2c * 0.4;
+        ctx.lineWidth = MathUtil.rand(2, 4 + p2c * 3);
+        ctx.beginPath();
+        var fx = baseX2, fy = cy;
+        ctx.moveTo(fx, fy);
+        var fdir = MathUtil.rand(0, Math.PI * 2);
+        for (var fsi = 0; fsi < 8; fsi++) {
+          var wobble = Math.sin(t * 5 + ti * 2 + fsi * 0.8) * (15 + p2c * 20);
+          fx += Math.cos(fdir) * (10 + p2c * 8) + Math.cos(t * 3 + fsi) * wobble * 0.3;
+          fy += Math.sin(fdir) * (10 + p2c * 8) + wobble;
+          ctx.lineTo(fx, fy);
+        }
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
+      for (var fi = 0; fi < Math.floor(p2c * 8); fi++) {
+        var fpx = baseX2 + MathUtil.rand(-60, 60) * p2c;
+        var fpy = cy + MathUtil.rand(-100, 20) * p2c;
+        ctx.fillStyle = "rgba(255," + MathUtil.randInt(100, 200) + ",0," + MathUtil.rand(0.3, 0.7) + ")";
+        ctx.beginPath();
+        ctx.arc(fpx, fpy, MathUtil.rand(1, 5), 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    ctx.restore();
+  }
+  drawChargeRing(charge, ssStart, ssEnd) {
+    var ctx = this.ctx, cx = this.cx, cy = this.cy;
+    var radius = Math.min(this.w, this.h) * 0.18;
+    ctx.strokeStyle = "rgba(255,255,255,0.1)";
+    ctx.lineWidth = 8;
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+    ctx.stroke();
+    var ssA1 = -Math.PI / 2 + ssStart * Math.PI * 2;
+    var ssA2 = -Math.PI / 2 + ssEnd * Math.PI * 2;
+    ctx.strokeStyle = "rgba(255,215,0,0.35)";
+    ctx.lineWidth = 12;
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius, ssA1, ssA2);
+    ctx.stroke();
+    var endAngle = -Math.PI / 2 + charge * Math.PI * 2;
+    var arcColor = "#fff";
+    if (charge >= ssStart && charge <= ssEnd) arcColor = "#ffd700";
+    else if (charge > ssEnd) arcColor = "#f33";
+    ctx.strokeStyle = arcColor;
+    ctx.lineWidth = 6;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius, -Math.PI / 2, endAngle);
+    ctx.stroke();
+    ctx.lineCap = "butt";
+    var pct = Math.floor(MathUtil.clamp(charge, 0, 1) * 100);
+    ctx.fillStyle = arcColor;
+    ctx.font = "bold 28px Courier New";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(pct + "%", cx, cy);
+  }
+  drawSpeedLines() {
+    if (this.speedLines.length === 0) return;
+    var ctx = this.ctx, cx = this.cx, cy = this.cy;
+    ctx.save();
+    for (var i = 0; i < this.speedLines.length; i++) {
+      var sl = this.speedLines[i];
+      var a = MathUtil.clamp(sl.life / sl.maxLife, 0, 1) * sl.alpha;
+      ctx.strokeStyle = "rgba(255,255,255," + a + ")";
+      ctx.lineWidth = sl.width;
+      var s = sl.startR + sl.offset;
+      var e = s + sl.length;
+      ctx.beginPath();
+      ctx.moveTo(cx + Math.cos(sl.angle) * s, cy + Math.sin(sl.angle) * s);
+      ctx.lineTo(cx + Math.cos(sl.angle) * e, cy + Math.sin(sl.angle) * e);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+  drawFlash() {
+    if (this.flashAlpha > 0) {
+      this.ctx.fillStyle = "rgba(255,255,255," + this.flashAlpha + ")";
+      this.ctx.fillRect(-50, -50, this.w + 100, this.h + 100);
+    }
+  }
+  endFrame() { this.ctx.restore(); }
+}
 
-      const keys = {};
-      window.addEventListener("keydown", (e) => {
-        if (e.repeat) return;
-        keys[e.code] = true;
-        if (e.code === "Space") handlePress(1);
-        if (e.code === "Enter" || e.code === "NumpadEnter") handlePress(2);
-      });
-      window.addEventListener("keyup", (e) => {
-        keys[e.code] = false;
-        if (e.code === "Space") handleRelease(1);
-        if (e.code === "Enter" || e.code === "NumpadEnter") handleRelease(2);
-      });
+/* ========== Engine ========== */
+class Engine {
+  constructor() {
+    this.canvas = document.getElementById("gameCanvas");
+    this.renderer = new Renderer(this.canvas);
+    this.particles = new ParticleSystem();
+    this.audio = new AudioSynth();
+    this.input = new InputManager(this);
+    this.scoreEl = document.getElementById("scoreDisplay");
+    this.msgEl = document.getElementById("centerMessage");
+    this.p1StatusEl = document.getElementById("p1Status");
+    this.p2StatusEl = document.getElementById("p2Status");
+    this.chargeTime = 3000;
+    this.sweetSpotStart = 0.85;
+    this.sweetSpotEnd = 0.95;
+    this.winScore = 3;
+    this.clashThresholdMs = 10;
+    this.state = "IDLE";
+    this.p1Score = 0;
+    this.p2Score = 0;
+    this.p1Holding = false;
+    this.p2Holding = false;
+    this.p1Ready = false;
+    this.p2Ready = false;
+    this.chargeStartTime = 0;
+    this.chargeProgress = 0;
+    this.p1Released = false;
+    this.p2Released = false;
+    this.p1ReleaseTime = 0;
+    this.p2ReleaseTime = 0;
+    this.p1StrikeScore = 0;
+    this.p2StrikeScore = 0;
+    this.p1Failed = false;
+    this.p2Failed = false;
+    this.resolveTimer = 0;
+    this.readyDelayTimer = 0;
+    this.lastTime = performance.now();
+    this.gameOverTimer = 0;
+    this._setMessage("SAMURAI STRIKE", "");
+    this._setStatus(1, "Hold to ready...", "");
+    this._setStatus(2, "Hold to ready...", "");
+    this._updateScore();
+    var self = this;
+    this._raf = function(now) {
+      requestAnimationFrame(self._raf);
+      self._loop(now);
+    };
+    requestAnimationFrame(this._raf);
+  }
+  _setMessage(text, cls) {
+    this.msgEl.textContent = text;
+    this.msgEl.className = cls || "";
+  }
+  _setStatus(player, text, cls) {
+    var el = player === 1 ? this.p1StatusEl : this.p2StatusEl;
+    el.textContent = text;
+    el.className = "status-text " + (cls || "");
+  }
+  _updateScore() {
+    this.scoreEl.textContent = this.p1Score + " ⚔ " + this.p2Score;
+  }
+  _vibrate(pattern) {
+    if (navigator.vibrate) {
+      try { navigator.vibrate(pattern); } catch (e) {}
+    }
+  }
+  onPlayerDown(player) {
+    this.audio.init();
+    if (this.state === "GAMEOVER") {
+      this._resetGame();
+      return;
+    }
+    if (player === 1) this.p1Holding = true;
+    if (player === 2) this.p2Holding = true;
+    if (this.state === "IDLE") {
+      if (player === 1 && !this.p1Ready) {
+        this.p1Ready = true;
+        this._setStatus(1, "READY!", "active");
+        this.audio.playTap();
+      }
+      if (player === 2 && !this.p2Ready) {
+        this.p2Ready = true;
+        this._setStatus(2, "READY!", "active");
+        this.audio.playTap();
+      }
+      if (this.p1Ready && this.p2Ready) {
+        this.state = "READYING";
+        this.readyDelayTimer = 0.5;
+        this._setMessage("FOCUS...", "");
+      }
+    }
+  }
+  onPlayerUp(player) {
+    if (player === 1) this.p1Holding = false;
+    if (player === 2) this.p2Holding = false;
+    if (this.state === "IDLE") {
+      if (player === 1 && this.p1Ready && !this.p2Ready) {
+        this.p1Ready = false;
+        this._setStatus(1, "Hold to ready...", "");
+      }
+      if (player === 2 && this.p2Ready && !this.p1Ready) {
+        this.p2Ready = false;
+        this._setStatus(2, "Hold to ready...", "");
+      }
+    }
+    if (this.state === "READYING") {
+      if (player === 1 && !this.p1Released) {
+        this.p1Failed = true;
+        this.p1Released = true;
+        this.p1ReleaseTime = performance.now();
+        this.p1StrikeScore = -1;
+        this._setStatus(1, "TOO EARLY!", "error");
+        this.audio.playFail();
+        this._spawnFailParticles(1);
+      }
+      if (player === 2 && !this.p2Released) {
+        this.p2Failed = true;
+        this.p2Released = true;
+        this.p2ReleaseTime = performance.now();
+        this.p2StrikeScore = -1;
+        this._setStatus(2, "TOO EARLY!", "error");
+        this.audio.playFail();
+        this._spawnFailParticles(2);
+      }
+      this._checkBothCommitted();
+    }
+    if (this.state === "CHARGING") {
+      if (player === 1 && !this.p1Released) {
+        this.p1Released = true;
+        this.p1ReleaseTime = performance.now();
+        var currentCharge = this.chargeProgress;
+        if (currentCharge >= this.sweetSpotStart && currentCharge <= this.sweetSpotEnd) {
+          this.p1StrikeScore = currentCharge;
+          this._setStatus(1, "STRIKE! (" + Math.floor(currentCharge * 100) + "%)", "active");
+        } else {
+          this.p1Failed = true;
+          this.p1StrikeScore = -1;
+          this._setStatus(1, currentCharge < this.sweetSpotStart ? "TOO EARLY!" : "OVERHEATED!", "error");
+          this.audio.playFail();
+          this._spawnFailParticles(1);
+        }
+      }
+      if (player === 2 && !this.p2Released) {
+        this.p2Released = true;
+        this.p2ReleaseTime = performance.now();
+        var currentCharge2 = this.chargeProgress;
+        if (currentCharge2 >= this.sweetSpotStart && currentCharge2 <= this.sweetSpotEnd) {
+          this.p2StrikeScore = currentCharge2;
+          this._setStatus(2, "STRIKE! (" + Math.floor(currentCharge2 * 100) + "%)", "active");
+        } else {
+          this.p2Failed = true;
+          this.p2StrikeScore = -1;
+          this._setStatus(2, currentCharge2 < this.sweetSpotStart ? "TOO EARLY!" : "OVERHEATED!", "error");
+          this.audio.playFail();
+          this._spawnFailParticles(2);
+        }
+      }
+      this._checkBothCommitted();
+    }
+  }
+  _checkBothCommitted() {
+    if (this.p1Failed && !this.p2Released) {
+      this._resolveWin(2);
+      return;
+    }
+    if (this.p2Failed && !this.p1Released) {
+      this._resolveWin(1);
+      return;
+    }
+    if (this.p1Released && this.p2Released) {
+      this._resolveRound();
+    }
+  }
+  _resolveRound() {
+    this.audio.silenceDrone();
+    this.state = "RESOLVING";
+    this.resolveTimer = 2.0;
+    if (this.p1Failed && this.p2Failed) {
+      this._setMessage("BOTH FAILED!", "msg-fail");
+      this.renderer.shake(15);
+      this._setStatus(1, "FAILED", "error");
+      this._setStatus(2, "FAILED", "error");
+      this.resolveTimer = 1.5;
+      return;
+    }
+    if (this.p1Failed && !this.p2Failed) { this._resolveWin(2); return; }
+    if (this.p2Failed && !this.p1Failed) { this._resolveWin(1); return; }
+    // Simultaneous release fix: if both released within 10ms, treat as CLASH/DRAW
+    var timeDiff = Math.abs(this.p1ReleaseTime - this.p2ReleaseTime);
+    if (timeDiff <= this.clashThresholdMs) { this._resolveClash(); return; }
+    if (this.p1StrikeScore > this.p2StrikeScore) this._resolveWin(1);
+    else if (this.p2StrikeScore > this.p1StrikeScore) this._resolveWin(2);
+    else this._resolveClash();
+  }
+  _resolveWin(winner) {
+    this.audio.silenceDrone();
+    this.state = "RESOLVING";
+    this.resolveTimer = 2.0;
+    var loser = winner === 1 ? 2 : 1;
+    if (winner === 1) this.p1Score++;
+    else this.p2Score++;
+    this._updateScore();
+    this.renderer.freezeUntil = performance.now() + 100;
+    this.renderer.flash(0.8);
+    this.renderer.spawnSpeedLines();
+    this.renderer.shake(30);
+    this.audio.playThunderClap();
+    this._vibrate([100, 30, 100]);
+    var cx = this.renderer.cx, cy = this.renderer.cy;
+    var winColors = winner === 1 ? ["#0af", "#0df", "#08f", "#fff"] : ["#f60", "#f80", "#fa0", "#fff"];
+    this.particles.emit(cx, cy, 50, {
+      angleBase: 0, angleSpread: Math.PI,
+      speedMin: 100, speedMax: 600,
+      lifeMin: 0.4, lifeMax: 1.2,
+      sizeMin: 2, sizeMax: 8,
+      colors: winColors, type: "circle", gravity: 100, drag: 0.96
+    });
+    this.particles.emit(cx, cy, 30, {
+      angleBase: 0, angleSpread: Math.PI,
+      speedMin: 200, speedMax: 800,
+      lifeMin: 0.3, lifeMax: 0.8,
+      sizeMin: 2, sizeMax: 5,
+      colors: winColors, type: "spark", gravity: 0, drag: 0.95
+    });
+    var shardX = loser === 1 ? cx - 120 : cx + 120;
+    var shardAngle = loser === 1 ? Math.PI : 0;
+    var loserColors = loser === 1
+      ? ["rgba(0,170,255,0.5)", "rgba(0,136,255,0.4)", "rgba(0,221,255,0.3)"]
+      : ["rgba(255,102,0,0.5)", "rgba(255,128,0,0.4)", "rgba(255,170,0,0.3)"];
+    this.particles.emit(shardX, cy, 40, {
+      angleBase: shardAngle, angleSpread: Math.PI * 0.6,
+      speedMin: 80, speedMax: 400,
+      lifeMin: 0.8, lifeMax: 2.0,
+      sizeMin: 8, sizeMax: 25,
+      colors: loserColors, type: "shard", gravity: 300, drag: 0.97
+    });
+    var wName = winner === 1 ? "P1" : "P2";
+    var msgCls = winner === 1 ? "msg-p1" : "msg-p2";
+    this._setMessage(wName + " STRIKES!", msgCls);
+    this._setStatus(winner, "WINNER!", "win");
+    this._setStatus(loser, "DEFEATED", "lose");
+    if (this.p1Score >= this.winScore || this.p2Score >= this.winScore) {
+      this.resolveTimer = 3.0;
+      var gw = this.p1Score >= this.winScore ? "P1" : "P2";
+      var gc = this.p1Score >= this.winScore ? "msg-p1" : "msg-p2";
+      var self = this;
+      setTimeout(function() {
+        self.state = "GAMEOVER";
+        self.gameOverTimer = 0;
+        self._setMessage(gw + " WINS THE DUEL!", gc);
+      }, 1500);
+    }
+  }
+  _resolveClash() {
+    this.audio.silenceDrone();
+    this.state = "RESOLVING";
+    this.resolveTimer = 2.0;
+    this.renderer.freezeUntil = performance.now() + 100;
+    this.renderer.flash(1.0);
+    this.renderer.spawnSpeedLines();
+    this.renderer.shake(40);
+    this.audio.playClash();
+    this._vibrate([100, 30, 100, 30, 100]);
+    var cx = this.renderer.cx, cy = this.renderer.cy;
+    var clashColors = ["#fff", "#ff0", "#f0f", "#0ff"];
+    this.particles.emit(cx, cy, 70, {
+      angleBase: 0, angleSpread: Math.PI,
+      speedMin: 150, speedMax: 700,
+      lifeMin: 0.4, lifeMax: 1.5,
+      sizeMin: 2, sizeMax: 10,
+      colors: clashColors, type: "circle", gravity: 50, drag: 0.96
+    });
+    this.particles.emit(cx, cy, 40, {
+      angleBase: 0, angleSpread: Math.PI,
+      speedMin: 300, speedMax: 900,
+      lifeMin: 0.2, lifeMax: 0.7,
+      sizeMin: 2, sizeMax: 5,
+      colors: clashColors, type: "spark", gravity: 0, drag: 0.94
+    });
+    this._setMessage("DRAW — CLASH!", "msg-draw");
+    this._setStatus(1, "CLASH!", "clash");
+    this._setStatus(2, "CLASH!", "clash");
+  }
+  _spawnFailParticles(player) {
+    var cx = this.renderer.cx, cy = this.renderer.cy;
+    var px = player === 1 ? cx - 120 : cx + 120;
+    var col = player === 1 ? ["#08f", "#0af", "#066"] : ["#f60", "#a30", "#630"];
+    this.particles.emit(px, cy, 20, {
+      angleBase: 0, angleSpread: Math.PI,
+      speedMin: 30, speedMax: 150,
+      lifeMin: 0.3, lifeMax: 0.8,
+      sizeMin: 1, sizeMax: 4,
+      colors: col, type: "circle", gravity: 200, drag: 0.95
+    });
+  }
+  _resetRound() {
+    this.p1Ready = false;
+    this.p2Ready = false;
+    this.p1Holding = false;
+    this.p2Holding = false;
+    this.p1Released = false;
+    this.p2Released = false;
+    this.p1ReleaseTime = 0;
+    this.p2ReleaseTime = 0;
+    this.p1StrikeScore = 0;
+    this.p2StrikeScore = 0;
+    this.p1Failed = false;
+    this.p2Failed = false;
+    this.chargeProgress = 0;
+    this.chargeStartTime = 0;
+    this.readyDelayTimer = 0;
+    this.state = "IDLE";
+    this._setMessage("NEXT ROUND", "");
+    this._setStatus(1, "Hold to ready...", "");
+    this._setStatus(2, "Hold to ready...", "");
+  }
+  _resetGame() {
+    this.p1Score = 0;
+    this.p2Score = 0;
+    this._updateScore();
+    this.particles.clear();
+    this._resetRound();
+    this._setMessage("SAMURAI STRIKE", "");
+  }
+  _loop(now) {
+    var dt = Math.min((now - this.lastTime) / 1000, 0.1);
+    this.lastTime = now;
+    if (now < this.renderer.freezeUntil) return;
+    this._update(dt, now);
+    this._draw();
+  }
+  _update(dt, now) {
+    this.renderer.update(dt);
+    this.particles.update(dt);
+    if (this.state === "READYING") {
+      this.readyDelayTimer -= dt;
+      if (this.readyDelayTimer <= 0) {
+        if (!this.p1Released && !this.p2Released) {
+          this.state = "CHARGING";
+          this.chargeStartTime = performance.now();
+          this.chargeProgress = 0;
+          this._setMessage("CHARGE!", "");
+          this._setStatus(1, "Charging...", "active");
+          this._setStatus(2, "Charging...", "active");
+        } else if (this.p1Released && this.p2Released) {
+          this._resolveRound();
+        } else if (this.p1Released && this.p1Failed) {
+          this._resolveWin(2);
+        } else if (this.p2Released && this.p2Failed) {
+          this._resolveWin(1);
+        }
+      }
+    }
+    if (this.state === "CHARGING") {
+      this.chargeProgress = (performance.now() - this.chargeStartTime) / this.chargeTime;
+      this.chargeProgress = MathUtil.clamp(this.chargeProgress, 0, 1.05);
+      this.audio.updateChargeDrone(this.chargeProgress);
+      if (this.chargeProgress > 0.5) {
+        this.renderer.shakeAmount = Math.max(this.renderer.shakeAmount, (this.chargeProgress - 0.5) * 10);
+      }
+      if (this.chargeProgress >= 1.0) {
+        if (!this.p1Released) {
+          this.p1Released = true;
+          this.p1ReleaseTime = performance.now();
+          this.p1Failed = true;
+          this.p1StrikeScore = -1;
+          this._setStatus(1, "OVERHEATED!", "error");
+          this.audio.playFail();
+          this._spawnFailParticles(1);
+        }
+        if (!this.p2Released) {
+          this.p2Released = true;
+          this.p2ReleaseTime = performance.now();
+          this.p2Failed = true;
+          this.p2StrikeScore = -1;
+          this._setStatus(2, "OVERHEATED!", "error");
+          this.audio.playFail();
+          this._spawnFailParticles(2);
+        }
+        if (this.p1Released && this.p2Released) {
+          this._resolveRound();
+        }
+      }
+    }
+    if (this.state === "RESOLVING") {
+      this.resolveTimer -= dt;
+      if (this.resolveTimer <= 0) {
+        if (this.p1Score >= this.winScore || this.p2Score >= this.winScore) {
+          this.state = "GAMEOVER";
+          this.gameOverTimer = 0;
+        } else {
+          this._resetRound();
+        }
+      }
+    }
+    if (this.state === "GAMEOVER") {
+      this.gameOverTimer += dt;
+      if (this.gameOverTimer > 1.0 && Math.sin(this.gameOverTimer * 3) > 0) {
+        this.p1StatusEl.textContent = "Tap/press to restart";
+        this.p2StatusEl.textContent = "Tap/press to restart";
+      }
+    }
+  }
+  _draw() {
+    var r = this.renderer;
+    var ctx = r.ctx;
+    var ci = this.state === "CHARGING" ? this.chargeProgress : 0;
+    r.beginFrame();
+    r.drawBackground(ci);
+    if (this.state === "CHARGING") {
+      r.drawChargeAuras(this.chargeProgress, this.chargeProgress);
+      r.drawChargeRing(this.chargeProgress, this.sweetSpotStart, this.sweetSpotEnd);
+    }
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    this.particles.draw(ctx);
+    ctx.restore();
+    r.drawSpeedLines();
+    r.drawFlash();
+    r.endFrame();
+  }
+}
 
-      // 阻止默认上下文菜单
-      window.addEventListener("contextmenu", (e) => e.preventDefault());
-    </script>
-  </body>
+/* ========== Boot ========== */
+window.addEventListener("DOMContentLoaded", function() { new Engine(); });
+</script>
+</body>
 </html>
