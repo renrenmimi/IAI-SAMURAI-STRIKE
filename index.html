@@ -53,6 +53,7 @@ class MathUtil {
   static rand(a, b) { if (b === undefined) { b = a; a = 0; } return a + Math.random() * (b - a); }
   static randInt(a, b) { return Math.floor(MathUtil.rand(a, b + 0.999)); }
   static noise2D(x, y) {
+    // Standard hash-based 2D noise using well-known irrational-product constants
     var h = function(px, py) {
       var s = Math.sin(px * 127.1 + py * 311.7) * 43758.5453;
       return s - Math.floor(s);
@@ -227,7 +228,7 @@ class AudioSynth {
       this.subGain.connect(this.master);
       this.subOsc.start();
       this.initialized = true;
-    } catch (e) { /* no audio support */ }
+    } catch (e) { this.ctx = null; }
   }
   updateChargeDrone(intensity) {
     if (!this.ctx) return;
@@ -796,14 +797,14 @@ class Engine {
       if (player === 1 && !this.p1Released) {
         this.p1Released = true;
         this.p1ReleaseTime = performance.now();
-        var cp = this.chargeProgress;
-        if (cp >= this.sweetSpotStart && cp <= this.sweetSpotEnd) {
-          this.p1StrikeScore = cp;
-          this._setStatus(1, "STRIKE! (" + Math.floor(cp * 100) + "%)", "active");
+        var currentCharge = this.chargeProgress;
+        if (currentCharge >= this.sweetSpotStart && currentCharge <= this.sweetSpotEnd) {
+          this.p1StrikeScore = currentCharge;
+          this._setStatus(1, "STRIKE! (" + Math.floor(currentCharge * 100) + "%)", "active");
         } else {
           this.p1Failed = true;
           this.p1StrikeScore = -1;
-          this._setStatus(1, cp < this.sweetSpotStart ? "TOO EARLY!" : "OVERHEATED!", "error");
+          this._setStatus(1, currentCharge < this.sweetSpotStart ? "TOO EARLY!" : "OVERHEATED!", "error");
           this.audio.playFail();
           this._spawnFailParticles(1);
         }
@@ -811,14 +812,14 @@ class Engine {
       if (player === 2 && !this.p2Released) {
         this.p2Released = true;
         this.p2ReleaseTime = performance.now();
-        var cp2 = this.chargeProgress;
-        if (cp2 >= this.sweetSpotStart && cp2 <= this.sweetSpotEnd) {
-          this.p2StrikeScore = cp2;
-          this._setStatus(2, "STRIKE! (" + Math.floor(cp2 * 100) + "%)", "active");
+        var currentCharge2 = this.chargeProgress;
+        if (currentCharge2 >= this.sweetSpotStart && currentCharge2 <= this.sweetSpotEnd) {
+          this.p2StrikeScore = currentCharge2;
+          this._setStatus(2, "STRIKE! (" + Math.floor(currentCharge2 * 100) + "%)", "active");
         } else {
           this.p2Failed = true;
           this.p2StrikeScore = -1;
-          this._setStatus(2, cp2 < this.sweetSpotStart ? "TOO EARLY!" : "OVERHEATED!", "error");
+          this._setStatus(2, currentCharge2 < this.sweetSpotStart ? "TOO EARLY!" : "OVERHEATED!", "error");
           this.audio.playFail();
           this._spawnFailParticles(2);
         }
@@ -853,6 +854,7 @@ class Engine {
     }
     if (this.p1Failed && !this.p2Failed) { this._resolveWin(2); return; }
     if (this.p2Failed && !this.p1Failed) { this._resolveWin(1); return; }
+    // Simultaneous release fix: if both released within 10ms, treat as CLASH/DRAW
     var timeDiff = Math.abs(this.p1ReleaseTime - this.p2ReleaseTime);
     if (timeDiff <= this.clashThresholdMs) { this._resolveClash(); return; }
     if (this.p1StrikeScore > this.p2StrikeScore) this._resolveWin(1);
