@@ -16,4 +16,4 @@ hold too long and your blade overheats. One clean strike ends the round.
 
 ## Tech
 
-Single-file HTML5 Canvas app, local two-player. No build step, no dependencies.
+One `index.html` file, Canvas 2D. Two players share one keyboard.
