@@ -5,6 +5,8 @@
 A two-player duel of nerve. Hold to charge your draw — release too early and you whiff,
 hold too long and your blade overheats. One clean strike ends the round.
 
+![Two samurai, charging for the draw](docs/screenshot.jpg)
+
 ## How a round goes
 
 1. **Hold to ready** — both samurai start charging
