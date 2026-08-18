@@ -1,4 +1,4 @@
-# Iai Samurai Strike ⚔️
+# Iai Samurai Strike
 
 **▶ [Play now](https://renrenmimi.github.io/IAI-SAMURAI-STRIKE/)** — runs in your browser, nothing to install.
 
